@@ -1,8 +1,13 @@
 import requests
 import re
 import matplotlib.pyplot as plt
+import time
+import os
+import json
+import re
+import numpy as np
 
-def download_data(url):
+def downloadData(url):
     print(f"Descargando archivo .dat desde Gist...")
     try:
         response = requests.get(url)
@@ -12,7 +17,7 @@ def download_data(url):
         print(f"Error descargando: {e}")
         return None
 
-def parse_num_cds(ampl_data):
+def parseNumCds(ampl_data):
     match = re.search(r'set\s+I\s*:=\s*(.*?);', ampl_data, re.DOTALL | re.IGNORECASE)
     if match:
         content = match.group(1)
@@ -29,7 +34,10 @@ def plot_convergence(history):
     plt.grid(True)
     plt.show()
 
-def calcularHipervolumen(puntos, minX, maxX, minY, maxY):
+def repairChromosome(chromosome):
+    return [1 if (item[1] if isinstance(item, tuple) else item) >= 0.15 else 0 for item in chromosome]
+
+def calculateHypervolume(puntos, minX, maxX, minY, maxY):
     if len(puntos) == 0:
         return 0.0
         
@@ -67,10 +75,6 @@ def calcularHipervolumen(puntos, minX, maxX, minY, maxY):
                 hipervolumen += area
             
     return hipervolumen
-
-
-import re
-import numpy as np
 
 def characterizeInstance(instanceData):
     reporte = []
@@ -134,3 +138,138 @@ def characterizeInstance(instanceData):
     
     # Devolvemos todo como un solo bloque de texto
     return "\n".join(reporte)
+
+def rankCds(fixedCosts, capacities, transportCosts, numCds, numClients):
+    cdAttractiveness = []
+    
+    for i in range(numCds):
+        avgTransportCost = sum(transportCosts[(i, j)] for j in range(numClients)) / numClients
+        
+        efficiencyRatio = capacities[i] / (fixedCosts[i] + (avgTransportCost * 50) + 0.0001)
+        cdAttractiveness.append({'cd': i, 'ratio': efficiencyRatio})
+        
+    cdAttractiveness.sort(key=lambda x: x['ratio'], reverse=True)
+    return cdAttractiveness
+
+def generateAndSaveReport(
+    instanceName, dataUrl, numCds, characterizationStr,
+    useEpsilon, setPoints, epsilonTime, epsilonHypervolume,
+    transportMax, infraMax, transportMin, infraMin, paretoX, paretoY,
+    popSize, generations, mutationRate, totalCalls, geneticTime,
+    mogaHypervolume, paretoFront, mogaQuality
+):
+    reportLines = []
+    reportLines.append("==================================================")
+    reportLines.append("        REPORTE DE EJECUCIÓN MULTIOBJETIVO      ")
+    reportLines.append("==================================================")
+    reportLines.append(f"URL Instancia Evaluada: {dataUrl}")
+    reportLines.append(f"Tamaño de Instancia: {numCds} CDs")
+    
+    reportLines.append("\nCARACTERIZACIÓN DE LA INSTANCIA")
+    reportLines.append(characterizationStr.strip())
+
+    reportLines.append("\nRESULTADOS EPSILON-CONSTRAINT")
+    if useEpsilon or setPoints:
+        reportLines.append(f"Tiempo de ejecución : {epsilonTime:.4f} segundos")
+        reportLines.append(f"Hipervolumen        : {epsilonHypervolume:.4f}")
+        reportLines.append(f"\nPuntos Lexicográficos (Extremos del Frente):")
+        reportLines.append(f"  - Nadir: Transp={transportMax:.2f}, Infra={infraMax:.2f}")
+        reportLines.append(f"  - Transp. Mín   : Transp={transportMin:.2f}, Infra={infraMax:.2f}")
+        reportLines.append(f"  - Infra. Mín    : Transp={transportMax:.2f}, Infra={infraMin:.2f}")
+        
+        reportLines.append(f"\nPuntos del Frente ({len(paretoX)} steps):")
+        for index in range(len(paretoX)):
+            reportLines.append(f"  Punto {index+1}: Transp={paretoX[index]:.2f}, Infra={paretoY[index]:.2f}")
+    else:
+        reportLines.append("Ejecución omitida (useEpsilon = False).")
+
+    reportLines.append("\nRESULTADOS ALGORITMO GENÉTICO (NSGA-II)")
+
+    reportLines.append(f"Parámetros          : Población={popSize}, Generaciones={generations}, Mutación={mutationRate}")
+    reportLines.append(f"Llamadas al Solver  : {totalCalls} evaluaciones exactas")
+    reportLines.append(f"Tiempo de ejecución : {geneticTime:.4f} segundos")
+    reportLines.append(f"Hipervolumen        : {mogaHypervolume:.4f}")
+    
+    reportLines.append(f"\nFrente de Pareto Final - {len(paretoFront)} puntos:")
+    for index, solutionItem in enumerate(paretoFront):
+        chromosomeStr = solutionItem[0]
+        transportVal = solutionItem[1]
+        infraVal = solutionItem[2]
+        reportLines.append(f"  Punto {index+1}: Transp={transportVal:.2f}, Infra={infraVal:.2f} | Cromosoma: {chromosomeStr}")
+            
+    else:
+        reportLines.append("Ejecución omitida (useMoga = False).")
+
+    reportLines.append("\nCOMPARATIVA ESTADÍSTICA")
+    if (useEpsilon or setPoints) and epsilonHypervolume > 0:
+        reportLines.append(f"Calidad del MOGA vs Exacto : {mogaQuality:.2f}% (Cobertura del Hipervolumen)")
+        if geneticTime > 0:
+            timeAcceleration = epsilonTime / geneticTime
+            reportLines.append(f"Aceleración de Tiempo      : El MOGA fue {timeAcceleration:.2f}x más rápido que Epsilon")
+    else:
+        reportLines.append("No hay datos suficientes de ambos métodos para comparar.")
+
+    outputFolder = "resultados"
+    os.makedirs(outputFolder, exist_ok=True)
+
+    currentTime = time.time()
+    fileName = f"Resultados_{instanceName}_{currentTime}.txt"
+    filePath = os.path.join(outputFolder, fileName)
+    
+    with open(filePath, "w", encoding="utf-8") as fileObject:
+        fileObject.write("\n".join(reportLines))
+        
+    print(f"\n*** Los resultados han sido guardados exitosamente en '{filePath}' ***")
+    return filePath
+
+def loadInstance(name):
+
+    if not name.endswith(".dat"):
+        fileName = f"{name}.dat"
+    else:
+        fileName = name
+        
+    folderName = "instances"
+    filePath = os.path.join(folderName, fileName)
+    
+    try:
+        with open(filePath, 'r', encoding='utf-8') as fileObject:
+            fileContent = fileObject.read()
+        return fileContent
+    except FileNotFoundError:
+        print(f"Error: El archivo '{fileName}' no se encontró en la carpeta '{folderName}'.")
+        return None
+    except Exception as errorObject:
+        print(f"Error inesperado al leer la instancia: {errorObject}")
+        return None
+    
+def loadEpsilonResults(filePath, instanceUrl):
+    if not os.path.exists(filePath):
+        return None
+
+    try:
+        with open(filePath, 'r', encoding='utf-8') as f:
+            allResults = json.load(f)
+            
+        if instanceUrl in allResults:
+            print(f" --- Resultados previos encontrados para: {instanceUrl} --- ")
+            data = allResults[instanceUrl]
+            
+            return {
+                'time': data['metadata']['executionTime'],
+                'hv': data['metadata']['hypervolume'],
+                'transMin': data['lexicographicPoints']['infraMax']['transp'],
+                'transMax': data['lexicographicPoints']['infraMin']['transp'],
+                'infraMin': data['lexicographicPoints']['infraMin']['infra'],
+                'infraMax': data['lexicographicPoints']['infraMax']['infra'],
+                'paretoX': data['paretoFront']['x'],
+                'paretoY': data['paretoFront']['y']
+            }
+    except Exception as e:
+        print(f"Error al cargar resultados previos: {e}")
+        
+    return None
+
+def loadConfig(configPath):
+    with open(configPath, 'r', encoding='utf-8') as file:
+        return json.load(file)

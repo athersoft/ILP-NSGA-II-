@@ -1,0 +1,32 @@
+{
+  "numExperiments": 5,
+  "gaParams": {
+    "popSize": 50,
+    "generations": 15,
+    "mutationRate": 0.3,
+    "nJobs": 15,
+    "solver": "knitro",
+    "relaxedMutation": true,
+    "relaxedCrossover": true,
+    "operators": {
+      "initialization": [
+        {"method": "biased", "prob": 0.7},
+        {"method": "random", "prob": 0.0},
+        {"method": "relaxed", "prob": 0.3}
+      ],
+      "crossover": [
+        {"method": "fixedSet", "prob": 0.4},
+        {"method": "standard", "prob": 0.6}
+      ],
+      "mutation": [
+        {"method": "fixedSet", "prob": 0.0},
+        {"method": "ranked", "prob": 1.0},
+        {"method": "standard", "prob": 0.0}
+      ]
+    }
+  },
+  "instances": [
+    "20x10-3",
+    "30x15-1"
+  ]
+}

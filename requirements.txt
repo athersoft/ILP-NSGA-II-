@@ -1,0 +1,6 @@
+numpy
+matplotlib
+requests
+amplpy
+ampl_module_highs
+ampl_module_gurobi

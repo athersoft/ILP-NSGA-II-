@@ -3,6 +3,7 @@ from amplpy import AMPL, OutputHandler
 import numpy as np
 import math
 from .model import modelMultiObj
+from .utils import repairChromosome
 
 workerAmpl = None
 
@@ -56,23 +57,30 @@ def getEpsilon(currentInstance, mTransport, mInfrastructure, steps, relaxed = Fa
 
     return transportMin, transportMax, infraMin, infraMax, paretoX_clean, paretoY_clean, cdList
 
-def solveInstance(instance, model, epsilon = 1e20, relaxation = False, fixedCds = None, maxInfra = 1, maxTransp = 1, alpha = 0.5):
+def solveInstance(instance, model, epsilon = 1e20, relaxation = False, fixedCds = None, maxInfra = 1, maxTransp = 1, alpha = 0.5, solver = "gurobi", relaxedMutation = True, relaxedCrossover = True):
     t0 = time.time()
     ampl = AMPL()
     ampl.eval("reset;")
     ampl.eval(model)
     ampl.eval(instance)
     ampl.param["epsilon"] = epsilon
-    ampl.setOption("solver", "gurobi")
+    ampl.setOption("solver", solver)
     #ampl.option["gurobi_options"] = "NonConvex=2 timelimit=1800"
-    ampl.option["gurobi_options"] = "NonConvex=2 MIPGap=0.05"
-    ampl.setOutputHandler(SilentOutputHandler())
+    if relaxation:
+        ampl.setOption("relax_integrality", 1)
+
+    if solver == "gurobi":
+        ampl.option["gurobi_options"] = "NonConvex=2 MIPGap=0.05"
+    if solver == "knitro":
+        opciones = "outlev=0 mip_integral_gap_rel=0.05 opttol=1e-4 feastol=1e-4 mip_method=2 numthreads = 15"
+        ampl.setOption("knitro_options", opciones)
+    if solver == "snopt":
+        ampl.setOption("relax_integrality", 1)
+    #ampl.setOutputHandler(SilentOutputHandler())
     if model == modelMultiObj:
         ampl.param["maxTransp"] = maxTransp
         ampl.param["maxInfra"] = maxInfra
         ampl.param["alpha"] = alpha
-    if relaxation:
-        ampl.setOption("relax_integrality", 1)
 
     if fixedCds:
         indexList = list(ampl.getVariable("Z").getValues().toDict().keys())
@@ -101,7 +109,7 @@ def solveEpsilon(instance, model, epsilonValue, relaxed = False):
     ampl.setOption("solver", "gurobi")
     
     ampl.setOption("gurobi_options", "outlev=0") 
-    #ampl.option["gurobi_options"] = "NonConvex=2 MIPGap=1e-8 FeasTol=1e-9 BarConvTol=1e-9"
+    ampl.option["gurobi_options"] = "NonConvex=2 MIPGap=1e-8 FeasTol=1e-9 BarConvTol=1e-9"
     ampl.option["gurobi_options"] = "NonConvex=2 MIPGap=0.05 timelimit=1800"
     if relaxed:
         ampl.setOption("relax_integrality", 1)
@@ -124,15 +132,13 @@ class SilentOutputHandler(OutputHandler):
     def output(self, kind, msg):
         pass
 
-def initWorker(modelCode, dataStr, licenseUuid, gurobiOptions, maxTransp, maxInfra):
+def initWorker(modelCode, dataStr, licenseUuid, gurobiOptions, maxTransp, maxInfra, solver = "gurobi"):
     """Inicializa AMPL leyendo strings de texto directo."""
     global workerAmpl
     try:
-        # Intenta cargar licencia si es necesario, o usa local
-        workerAmpl = AMPL() # o tu ampl_notebook
+        workerAmpl = AMPL()
         workerAmpl.setOutputHandler(SilentOutputHandler())
         
-        # LA CORRECCIÓN ESTÁ AQUÍ: Usar eval() en lugar de read()
         workerAmpl.eval("reset;")
         workerAmpl.eval(modelCode)
         workerAmpl.eval(dataStr)
@@ -142,10 +148,16 @@ def initWorker(modelCode, dataStr, licenseUuid, gurobiOptions, maxTransp, maxInf
         
         # Configuración silenciosa para el worker
         workerAmpl.setOption("solver_msg", 0)
-        workerAmpl.setOption("solver", "gurobi")
-        workerAmpl.setOption("gurobi_options", f"{gurobiOptions} outlev=0 MIPGap=0.05")
+        workerAmpl.setOption("solver", solver)
+        if solver == "gurobi":
+            workerAmpl.setOption("gurobi_options", f"{gurobiOptions} outlev=0 MIPGap=0.05")
+        if solver == "knitro":
+            opciones = "outlev=0 mip_integral_gap_rel=0.05 opttol=1e-4 feastol=1e-4 mip_method=1"
+            workerAmpl.setOption("knitro_options", opciones)
+        if solver == "snopt":
+            workerAmpl.setOption("presolve", 1)
+            workerAmpl.setOption("relax_integrality", 1)
         
-        # Vital para evitar que crashee con soluciones imposibles
         workerAmpl.setOption("presolve", 0) 
         
     except Exception as e:

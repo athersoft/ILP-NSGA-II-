@@ -1,7 +1,7 @@
 import numpy as np
 import random
 
-AMPL_MODEL_CODE = r"""
+modelMonoObj = r"""
 set I; # Centros de Distribución (CDs)
 set J; # Clientes
 

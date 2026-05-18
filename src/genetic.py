@@ -4,107 +4,12 @@ import os
 from .solver import initWorker, solveWorker, solveInstance, getEpsilon
 from amplpy import AMPL
 import math
-
+from .iniPop import createBiasedChromosome, createRelaxedChromosome, createChromosome
 import matplotlib.pyplot as plt
 from src.model import mInfrastructure, mTransport
-
-def createRelaxedChromosome(currentInstance, steps=10, workerPool=None, fixedCosts=None):
-    
-    # 1. Obtener el frente relajado
-    transportMin, transportMax, infraMin, infraMax, relaxedParetoX, relaxedParetoY, relaxedPopulation = getEpsilon(
-        currentInstance, mTransport, mInfrastructure, steps, relaxed=True
-    )
-    
-    repairedPopulation = []
-    print(f"Población relajada: \n {relaxedPopulation}")
-    
-    # Inicializar el gráfico y graficar los puntos relajados
-    plt.figure(figsize=(10, 6))
-    plt.scatter(relaxedParetoX, relaxedParetoY, color='blue', alpha=0.6, label='Frente Relajado (Continuo)')
-    
-    # 2. Reparar los cromosomas
-    for individualGenes in relaxedPopulation:
-        repairedGenes  = repairChromosome(individualGenes)
-        newChromosome = {
-            "genes": repairedGenes,
-            "alpha": random.uniform(0.0, 1)
-        }
-        repairedPopulation.append(newChromosome)
-        
-    print(f"Población reparada: \n {repairedPopulation}")
-    
-    # 3. Evaluar la población reparada para obtener sus costos y graficarlos
-    if workerPool and fixedCosts:
-        dummyCache = {}
-        # Llamamos a tu función evaluatePopulation para obtener los costos de Transporte e Infra
-        repairedCosts, _ = evaluatePopulation(repairedPopulation, dummyCache, 0, fixedCosts, workerPool)
-        
-        repairedParetoX = []
-        repairedParetoY = []
-        
-        for currentCost in repairedCosts:
-            # Filtramos los que fallaron o dieron infinito
-            if currentCost is not None and currentCost[0] != float('inf'):
-                repairedParetoX.append(currentCost[0])
-                repairedParetoY.append(currentCost[1])
-                
-        plt.scatter(repairedParetoX, repairedParetoY, color='red', marker='x', s=60, label='Frente Reparado (Entero)')
-    else:
-        print("Advertencia: No se entregó 'workerPool' o 'fixedCosts'. El frente reparado no será evaluado ni graficado.")
-
-    # 4. Configurar y mostrar el gráfico final
-    plt.title("Comparación de Frente de Pareto: Relajado vs Reparado")
-    plt.xlabel("Costo de Transporte")
-    plt.ylabel("Costo de Infraestructura e Inventario")
-    plt.grid(True, linestyle=':', alpha=0.7)
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
-    
-    return repairedPopulation
-
-def createBiasedChromosome(rankedCds, capacities, totalDemand, betaParameter=0.3):
-    numCds = len(rankedCds)
-    chrom = [0] * numCds
-    currentCapacity = 0
-    unselectedCds = rankedCds.copy()
-    
-    while currentCapacity < totalDemand:
-        randVal = random.uniform(0.0001, 0.9999)
-        selectedIndex = int(math.log(randVal) / math.log(1 - betaParameter))
-        selectedIndex = min(selectedIndex, len(unselectedCds) - 1)
-        
-        chosenCdDict = unselectedCds.pop(selectedIndex)
-        chosenCd = chosenCdDict['cd']
-        
-        chrom[chosenCd] = 1
-        currentCapacity += capacities[chosenCd]
-        
-    #Diversidad
-    if random.random() < 0.3:
-        closedCds = [i for i in range(numCds) if chrom[i] == 0]
-        if closedCds:
-            chrom[random.choice(closedCds)] = 1
-            
-    return {
-        "genes": chrom,
-        "alpha": random.uniform(0.0, 1)
-    }
-
-def rankCds(fixedCosts, capacities, transportCosts, numCds, numClients):
-    cdAttractiveness = []
-    
-    for i in range(numCds):
-        avgTransportCost = sum(transportCosts[(i, j)] for j in range(numClients)) / numClients
-        
-        efficiencyRatio = capacities[i] / (fixedCosts[i] + (avgTransportCost * 50) + 0.0001)
-        cdAttractiveness.append({'cd': i, 'ratio': efficiencyRatio})
-        
-    cdAttractiveness.sort(key=lambda x: x['ratio'], reverse=True)
-    return cdAttractiveness
-
-def repairChromosome(chromosome):
-    return [1 if (item[1] if isinstance(item, tuple) else item) >= 0.15 else 0 for item in chromosome]
+from .utils import repairChromosome, rankCds
+from .mutation import mutateFixedSet, mutate, mutateRanked
+from .crossover import crossover, crossoverFixedSet
 
 def dominates(f1, f2):
     strongDominance = f1[0] < f2[0] and f1[1] < f2[1]
@@ -241,28 +146,6 @@ def evaluatePopulation(currentPop, fitnessCache, totalSolverCalls, fixCosts, poo
 
     return costs, totalSolverCalls
 
-def createChromosome(numCds):
-    #Se crea aleatoriamente un cromosoma con máximo el 30% de cd abiertos
-    toOpen = random.randint(1, int(round(numCds*0.5)))
-    #toOpen = random.randint(1, int(round(numCds*0.1)))
-    chrom = []
-    for i in range(numCds):
-        chrom.append(0)
-        
-    positions = random.sample(range(numCds), toOpen)
-    
-    for pos in positions:
-        chrom[pos] = 1
-    
-    #Alfa aleatorio
-    alpha = random.uniform(0.0, 1)
-    chromosoma = {
-        "genes": chrom,
-        "alpha": alpha
-    }
-
-    return chromosoma
-
 #Selección de torneo
 def tournamentSelection(population, ranks, distances, k=2):
     #2 sujetos aleatorios
@@ -280,116 +163,26 @@ def tournamentSelection(population, ranks, distances, k=2):
                 
     return population[bestIdx]
 
-def crossoverFixedSet(parent1, parent2, dataStr, modelCode, infraMax = 1, transpMax = 1):
-    point = random.randint(1, len(parent1["genes"]) - 1)
+def selectOperator(operatorConfig):
+    methods = [item["method"] for item in operatorConfig]
+    probabilities = [item["prob"] for item in operatorConfig]
+    return random.choices(methods, weights=probabilities, k=1)[0]
 
-    fixedSet1 = {}
-    for i in range(point, len(parent1["genes"])):
-        fixedSet1[i] = parent2["genes"][i]
-
-    fixedSet2 = {}
-    for i in range(0, point):
-        fixedSet2[i] = parent1["genes"][i]
-
-    alpha1 = random.uniform(0.0, 1)
-    alpha2 = random.uniform(0.0, 1)
-
-    aux, aux, child1Genes = solveInstance(dataStr, modelCode, relaxation = False, fixedCds=fixedSet1, maxInfra = infraMax, maxTransp = transpMax, alpha = alpha1)
-    aux, aux, child2Genes = solveInstance(dataStr, modelCode, relaxation = False, fixedCds=fixedSet2, maxInfra = infraMax, maxTransp = transpMax, alpha = alpha2)
-
-    child1Genes = repairChromosome(child1Genes)
-    child2Genes = repairChromosome(child2Genes)
-
-    child1 = {"genes": child1Genes, "alpha": alpha1}
-    child2 = {"genes": child2Genes, "alpha": alpha2}
-    return child1, child2
-
-def crossover(parent1, parent2): #El crossover más básico
-    point = random.randint(1, len(parent1["genes"]) - 1)
-    child1Genes = parent1["genes"][:point] + parent2["genes"][point:]
-    child2Genes = parent2["genes"][:point] + parent1["genes"][point:]
-    #childAlpha = (parent1["alpha"] + parent2["alpha"]) / 2.0
-    child1 = {"genes": child1Genes, "alpha": random.uniform(0.0, 1)}
-    child2 = {"genes": child2Genes, "alpha": random.uniform(0.0, 1)}
-    return child1, child2
-
-def mutateFixedSet(individual, dataStr, modelCode, freeCdsMin=0.05, freeCdsMax = 0.2, infraMax = 1, transpMax = 1):
-    chromLenght = len(individual)
-    numToUnfix = random.randint(round(chromLenght*freeCdsMin), round(chromLenght*freeCdsMax))
-    unfixedCds = random.sample(range(chromLenght), numToUnfix)
-
-    fixedCds = {}
-    for i in range(chromLenght):
-        if i not in unfixedCds:
-            fixedCds[i] = individual["genes"][i]
-
-    aux,aux, newGenes = solveInstance(dataStr, modelCode, relaxation = False, fixedCds=fixedCds, maxInfra = infraMax, maxTransp = transpMax, alpha = individual["alpha"])
-    newGenes = repairChromosome(newGenes)
-
-    newIndividual = {
-        "genes": newGenes, 
-        "alpha": individual["alpha"]
-    }
-
-    return newIndividual
-
-def mutate(individual, mutationRate=0.05): # Mutación básica
-    newGenes = individual["genes"][:] 
-    
-    for i in range(len(newGenes)):
-        if random.random() < mutationRate:
-            newGenes[i] = 1 - newGenes[i] 
-            
-    if sum(newGenes) == 0:
-         newGenes[random.randint(0, len(newGenes) - 1)] = 1
-         
-    newIndividual = {
-        "genes": newGenes, 
-        "alpha": individual["alpha"]
-    }
-
-    return newIndividual
-
-def mutateRanked(individual, ranking, mutationRate=0.05): # Mutación básica
-    newGenes = individual["genes"][:] 
-    totalRatio = 0
-    cdRatio = {}
-    for item in ranking:
-        totalRatio += item['ratio']
-        cdRatio[item['cd']] = item['ratio']
-        
-    avgRanking = totalRatio / len(ranking)
-
-    for i in range(len(newGenes)):
-        if random.random() < mutationRate:
-            if newGenes[i] == 1:
-                if cdRatio[i] >= avgRanking:
-                    if random.random() >= 0.5:
-                        newGenes[i] = 0
-                else:
-                    newGenes[i] = 0
-            else:
-                newGenes[i] = 1
-                
-    if sum(newGenes) == 0:
-         newGenes[random.randint(0, len(newGenes) - 1)] = 1
-         
-    newIndividual = {
-        "genes": newGenes, 
-        "alpha": individual["alpha"]
-    }
-
-    return newIndividual
-
-def geneticAlgorithm(modelCode, dataStr, numCds, popSize=20, generations=10, mutationRate=0.1, nJobs=2, licenseUuid="", infraMax = 1, transportMax = 1):
+def geneticAlgorithm(modelCode, dataStr, numCds, popSize=20, generations=10, mutationRate=0.1, nJobs=2, licenseUuid="", infraMax = 1, transportMax = 1, solver = "gurobi", relaxedMutation = True, relaxedCrossover = True, gaConfig=None):
     
     fitnessCache = {}
     totalSolverCalls = 0 
     paretoHistory = []
     failed = 0
 
-    #Esto es para sacar los costos fijos, para poder realizar el ajuste de crommosomas
-    from amplpy import AMPL
+    if gaConfig is None:
+        gaConfig = {}
+
+    gaConfig.setdefault("initialization", [{"method": "biased", "prob": 1.0}])
+    gaConfig.setdefault("crossover", [{"method": "standard", "prob": 1.0}])
+    gaConfig.setdefault("mutation", [{"method": "ranked", "prob": 1.0}])
+
+    #Esto es para sacar los costos fijos, para poder realizar el ajuste de cromosomas
     tempAmpl = AMPL()
     tempAmpl.eval("reset;")
     tempAmpl.eval(modelCode)
@@ -412,18 +205,23 @@ def geneticAlgorithm(modelCode, dataStr, numCds, popSize=20, generations=10, mut
     pool = multiprocessing.Pool(
         processes=nJobs,
         initializer=initWorker,
-        initargs=(modelCode, dataStr, licenseUuid, "outlev=0", transportMax, infraMax)
+        initargs=(modelCode, dataStr, licenseUuid, "outlev=0", transportMax, infraMax, solver)
     )
 
     print("Creando y evaluando población inicial")
 
     population = []
-    for i in range(popSize):
-        beta = random.uniform(0.2, 0.6) 
-        population.append(createBiasedChromosome(rankedCds, capacitiesFlat, totalDemand, betaParameter=beta))
-
-    #population = createRelaxedChromosome(dataStr, steps = 10, workerPool= pool,fixedCosts=fixCosts)
-    #population = [createChromosome(numCds) for _ in range(popSize)]
+    while len(population) < popSize:
+        initMethod = selectOperator(gaConfig["initialization"])
+        if initMethod == "biased":
+            betaParam = random.uniform(0.2, 0.6) 
+            population.append(createBiasedChromosome(rankedCds, capacitiesFlat, totalDemand, betaParameter=betaParam))
+        elif initMethod == "relaxed":
+            relaxedPopList = createRelaxedChromosome(dataStr, steps=10, workerPool=pool, fixedCosts=fixCosts)[0]
+            population.extend(relaxedPopList)
+        elif initMethod == "random":
+            population.append(createChromosome(numCds))
+    population = population[:popSize]
 
     fitnesses, totalSolverCalls = evaluatePopulation(population, fitnessCache, totalSolverCalls, fixCosts, pool)  
 
@@ -450,22 +248,22 @@ def geneticAlgorithm(modelCode, dataStr, numCds, popSize=20, generations=10, mut
             p1 = tournamentSelection(population, ranks, distances)
             p2 = tournamentSelection(population, ranks, distances)
             
-            probabilidad = random.random()
-            if probabilidad < 0.4:
-                c1, c2 = crossoverFixedSet(p1, p2, dataStr, modelCode,infraMax=infraMax, transpMax=transportMax)
+            crossMethod = selectOperator(gaConfig["crossover"])
+            if crossMethod == "fixedSet":
+                c1, c2 = crossoverFixedSet(p1, p2, dataStr, modelCode, infraMax=infraMax, transpMax=transportMax, solver=solver, relaxation=relaxedCrossover)
             else:
                 c1, c2 = crossover(p1, p2)
 
-            probabilidad = random.random()
-
-            if probabilidad < 0.3:
-                c1 = mutateFixedSet(c1, dataStr, modelCode, freeCdsMin=0.05, freeCdsMax = 0.15, infraMax=infraMax, transpMax=transportMax)
-                c2 = mutateFixedSet(c2, dataStr, modelCode, freeCdsMin=0.05, freeCdsMax = 0.15, infraMax=infraMax, transpMax=transportMax)
-            else:
-                #c1 = mutate(c1, mutationRate)
-                #c2 = mutate(c2, mutationRate)
+            mutMethod = selectOperator(gaConfig["mutation"])
+            if mutMethod == "fixedSet":
+                c1 = mutateFixedSet(c1, dataStr, modelCode, freeCdsMin=0.05, freeCdsMax=0.15, infraMax=infraMax, transpMax=transportMax, solver=solver, relaxation=relaxedMutation)
+                c2 = mutateFixedSet(c2, dataStr, modelCode, freeCdsMin=0.05, freeCdsMax=0.15, infraMax=infraMax, transpMax=transportMax, solver=solver, relaxation=relaxedMutation)
+            elif mutMethod == "ranked":
                 c1 = mutateRanked(c1, rankedCds, mutationRate)
                 c2 = mutateRanked(c2, rankedCds, mutationRate)
+            else:
+                c1 = mutate(c1, mutationRate)
+                c2 = mutate(c2, mutationRate)
 
             #Evitar que salgan cromosomas ya existentes
             c1Tuple = tuple(c1["genes"])
